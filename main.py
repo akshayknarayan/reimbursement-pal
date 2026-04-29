@@ -1,7 +1,10 @@
-import argparse
 import pdfplumber
 import requests
 from pypdf import PdfReader, PdfWriter
+
+import argparse
+import subprocess
+import os
 
 def llm_analyze(text: str, model_name: str, ollama_url: str):
     """
@@ -56,6 +59,38 @@ def extract_text_from_pdf(pdf_path: str) -> str:
             text += page.extract_text() + "\n"
     return text
 
+def make_cover_page(receipt_data: list[dict], filename: str = "./coverpage.pdf") -> str:
+    """
+    Creates a Markdown file containing a table of receipts.
+    """
+    lines = [
+        "# Receipt Summary",
+        "",
+        "| Description | Amount |",
+        "| :--- | :--- |"
+    ]
+
+    for receipt in receipt_data:
+        # Note: process_receipts uses 'summary' and 'amount' in its dictionary
+        description = receipt.get("summary", "No Description")
+        amount = receipt.get("amount", 0.0)
+        lines.append(f"| {description} | ${amount:,.2f} |")
+
+    grand_total = sum(item["amount"] for item in receipt_data)
+    lines.append(f"| **Grand Total** | **${grand_total:,.2f}** |")
+
+    # We'll use a markdown file as intermediate, but the caller expects a pdf path
+    # In a real scenario, you'd convert md to pdf here.
+    # For now, we follow the prompt's structure of returning a path.
+    md_path = filename.replace(".pdf", ".md")
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+
+    # now convert the md to pdf with pandoc
+    subprocess.check_call(["pandoc", "--pdf-engine", "tectonic", "-o", filename, md_path])
+    os.unlink(md_path)
+    return filename
+
 def process_receipts(pdf_paths: list[str], output_pdf: str, model_name: str, ollama_url: str):
     receipt_data = []
     writer = PdfWriter()
@@ -69,6 +104,7 @@ def process_receipts(pdf_paths: list[str], output_pdf: str, model_name: str, oll
             "summary": summary,
             "amount": amount
         })
+        print(f"Processed {path}. Summary: {summary}, Amount: {amount}")
 
         # Add the receipt pages to the writer
         reader = PdfReader(path)
@@ -84,13 +120,17 @@ def process_receipts(pdf_paths: list[str], output_pdf: str, model_name: str, oll
     print(f"-----------------------------")
     print(f"Grand Total: ${grand_total:.2f}")
 
+    coverpage_fn = "./coverpage.pdf"
+    make_cover_page(receipt_data, filename=coverpage_fn)
+    reader = PdfReader(coverpage_fn)
+    for page in reader.pages:
+        writer.insert_page(page, index=0)
+
     # Save the concatenated PDF
     with open(output_pdf, "wb") as f:
         writer.write(f)
+    os.unlink(coverpage_fn)
     print(f"\nConcatenated PDF saved to: {output_pdf}")
-
-    # Note: Creating a cover page with text would ideally require a library like reportlab.
-    # For this initial implementation, we've focused on extraction and concatenation.
 
 def main():
     parser = argparse.ArgumentParser(description="Process PDF receipts for reimbursement.")
