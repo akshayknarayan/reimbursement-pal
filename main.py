@@ -1,10 +1,12 @@
+import dateparser
 import pdfplumber
-import requests
 from pypdf import PdfReader, PdfWriter
+import requests
 
 import argparse
-import subprocess
+import datetime
 import os
+import subprocess
 
 def llm_analyze(text: str, model_name: str, ollama_url: str):
     """
@@ -33,7 +35,7 @@ def llm_analyze(text: str, model_name: str, ollama_url: str):
         response.raise_for_status()
         result = response.json().get("response", "")
 
-        date_str = "Unknown"
+        date = datetime.date.today()
         summary = "No summary available"
         amount = 0.0
 
@@ -43,6 +45,10 @@ def llm_analyze(text: str, model_name: str, ollama_url: str):
                 summary = line.replace("Summary:", "").strip()
             elif line.startswith("Date:"):
                 date_str = line.replace("Date:", "").strip().replace("$", "").replace(",", "")
+                try:
+                    date = dateparser.parse(date_str)
+                except:
+                    date = datetime.date.today()
             elif line.startswith("Amount:"):
                 amount_str = line.replace("Amount:", "").strip().replace("$", "").replace(",", "")
                 try:
@@ -50,7 +56,7 @@ def llm_analyze(text: str, model_name: str, ollama_url: str):
                 except ValueError:
                     amount = 0.0
 
-        return date_str, summary, amount
+        return date, summary, amount
 
     except Exception as e:
         print(f"Error during LLM analysis: {e}")
@@ -70,19 +76,19 @@ def make_cover_page(receipt_data: list[dict], filename: str = "./coverpage.pdf")
     lines = [
         "# Receipt Summary",
         "",
-        "| Date |  Description | Amount |",
+        "| Receipt Date |  Description | Amount |",
         "| :--- | :--- | :--- |"
     ]
 
     for receipt in receipt_data:
         # Note: process_receipts uses 'date, 'summary', and 'amount' in its dictionary
-        date = receipt.get("date", "Unknown")
+        date = receipt.get("date", datetime.date.today()).strftime("%d %b %Y")
         description = receipt.get("summary", "No Description")
         amount = receipt.get("amount", 0.0)
         lines.append(f"| {date} | {description} | ${amount:,.2f} |")
 
     grand_total = sum(item["amount"] for item in receipt_data)
-    lines.append(f"| **Grand Total** | **${grand_total:,.2f}** |")
+    lines.append(f"| | **Grand Total** | **${grand_total:,.2f}** |")
 
     # We'll use a markdown file as intermediate, but the caller expects a pdf path
     # In a real scenario, you'd convert md to pdf here.
@@ -112,8 +118,11 @@ def process_receipts(pdf_paths: list[str], output_pdf: str, model_name: str, oll
         })
         print(f"Processed {path}. Date: {date}, Summary: {summary}, Amount: {amount}")
 
+    receipt_data.sort(key=lambda x: x['date'])
+
+    for receipt in receipt_data:
         # Add the receipt pages to the writer
-        reader = PdfReader(path)
+        reader = PdfReader(receipt['path'])
         for page in reader.pages:
             writer.add_page(page)
 

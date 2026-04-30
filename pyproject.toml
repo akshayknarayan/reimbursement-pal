@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "dateparser>=1.4.0",
     "pdfplumber>=0.11.9",
     "pypdf>=6.10.2",
     "requests>=2.33.1",
