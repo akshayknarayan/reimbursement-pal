@@ -12,8 +12,9 @@ def llm_analyze(text: str, model_name: str, ollama_url: str):
     """
     prompt = f"""
     Analyze the following text from a receipt.
-    Provide a brief summary of the receipt and extract the total amount.
+    Provide the date, a brief summary (between 4-8 words) of the receipt, and extract the total amount.
     Return the result in the following format:
+    Date: <date>
     Summary: <summary>
     Amount: <amount>
 
@@ -32,6 +33,7 @@ def llm_analyze(text: str, model_name: str, ollama_url: str):
         response.raise_for_status()
         result = response.json().get("response", "")
 
+        date_str = "Unknown"
         summary = "No summary available"
         amount = 0.0
 
@@ -39,6 +41,8 @@ def llm_analyze(text: str, model_name: str, ollama_url: str):
         for line in result.split('\n'):
             if line.startswith("Summary:"):
                 summary = line.replace("Summary:", "").strip()
+            elif line.startswith("Date:"):
+                date_str = line.replace("Date:", "").strip().replace("$", "").replace(",", "")
             elif line.startswith("Amount:"):
                 amount_str = line.replace("Amount:", "").strip().replace("$", "").replace(",", "")
                 try:
@@ -46,7 +50,7 @@ def llm_analyze(text: str, model_name: str, ollama_url: str):
                 except ValueError:
                     amount = 0.0
 
-        return summary, amount
+        return date_str, summary, amount
 
     except Exception as e:
         print(f"Error during LLM analysis: {e}")
@@ -66,15 +70,16 @@ def make_cover_page(receipt_data: list[dict], filename: str = "./coverpage.pdf")
     lines = [
         "# Receipt Summary",
         "",
-        "| Description | Amount |",
-        "| :--- | :--- |"
+        "| Date |  Description | Amount |",
+        "| :--- | :--- | :--- |"
     ]
 
     for receipt in receipt_data:
-        # Note: process_receipts uses 'summary' and 'amount' in its dictionary
+        # Note: process_receipts uses 'date, 'summary', and 'amount' in its dictionary
+        date = receipt.get("date", "Unknown")
         description = receipt.get("summary", "No Description")
         amount = receipt.get("amount", 0.0)
-        lines.append(f"| {description} | ${amount:,.2f} |")
+        lines.append(f"| {date} | {description} | ${amount:,.2f} |")
 
     grand_total = sum(item["amount"] for item in receipt_data)
     lines.append(f"| **Grand Total** | **${grand_total:,.2f}** |")
@@ -98,13 +103,14 @@ def process_receipts(pdf_paths: list[str], output_pdf: str, model_name: str, oll
     for path in pdf_paths:
         print(f"Processing {path}...")
         text = extract_text_from_pdf(path)
-        summary, amount = llm_analyze(text, model_name, ollama_url)
+        date, summary, amount = llm_analyze(text, model_name, ollama_url)
         receipt_data.append({
             "path": path,
+            "date": date,
             "summary": summary,
             "amount": amount
         })
-        print(f"Processed {path}. Summary: {summary}, Amount: {amount}")
+        print(f"Processed {path}. Date: {date}, Summary: {summary}, Amount: {amount}")
 
         # Add the receipt pages to the writer
         reader = PdfReader(path)
