@@ -1,3 +1,4 @@
+from ocr_utils import extract_text_from_pdf_or_images
 import dateparser
 import pdfplumber
 from pypdf import PdfReader, PdfWriter
@@ -60,14 +61,35 @@ def llm_analyze(text: str, model_name: str, ollama_url: str):
 
     except Exception as e:
         print(f"Error during LLM analysis: {e}")
-        return "Error analyzing receipt", 0.0
+        raise e
 
 def extract_text_from_pdf(pdf_path: str) -> str:
-    text = ""
-    with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            text += page.extract_text() + "\n"
-    return text
+    """
+    Extracts text from a PDF using both pdfplumber and OCR if necessary.
+    """
+    try:
+        # First attempt: Use pdfplumber for digital text extraction
+        text = ""
+        with pdfplumber.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                extracted = page.extract_text()
+                if extracted:
+                    text += extracted + "\n"
+
+        # If text is empty or very short, it might be a scanned PDF, so try OCR
+        if len(text.strip()) < 10:
+            print(f"Low text density in {pdf_path}, attempting OCR...")
+            text = extract_text_from_pdf_or_images(pdf_path, is_pdf=True)
+
+        return text
+    except Exception as e:
+        print(f"Error extracting text from PDF {pdf_path}: {e}")
+        # Fallback to OCR if pdfplumber fails
+        try:
+            return extract_text_from_pdf_or_images(pdf_path, is_pdf=True)
+        except Exception as ocr_e:
+            print(f"OCR fallback also failed: {ocr_e}")
+            return ""
 
 def make_cover_page(receipt_data: list[dict], filename: str = "./coverpage.pdf") -> str:
     """
