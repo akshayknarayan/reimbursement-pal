@@ -63,30 +63,32 @@ def llm_analyze(text: str, model_name: str, ollama_url: str):
         print(f"Error during LLM analysis: {e}")
         raise e
 
-def extract_text_from_pdf(pdf_path: str) -> str:
+def extract_text_from_file(file_path: str) -> str:
     """
-    Extracts text from a PDF using both pdfplumber and OCR if necessary.
+    Extracts text from a PDF or image using both digital extraction and OCR if necessary.
     """
+    is_pdf = file_path.lower().endswith(".pdf")
     try:
-        # First attempt: Use pdfplumber for digital text extraction
+        # First attempt: Use pdfplumber for digital text extraction if it's a PDF
         text = ""
-        with pdfplumber.open(pdf_path) as pdf:
-            for page in pdf.pages:
-                extracted = page.extract_text()
-                if extracted:
-                    text += extracted + "\n"
+        if is_pdf:
+            with pdfplumber.open(file_path) as pdf:
+                for page in pdf.pages:
+                    extracted = page.extract_text()
+                    if extracted:
+                        text += extracted + "\n"
 
-        # If text is empty or very short, it might be a scanned PDF, so try OCR
-        if len(text.strip()) < 10:
-            print(f"Low text density in {pdf_path}, attempting OCR...")
-            text = extract_text_from_pdf_or_images(pdf_path, is_pdf=True)
+        # If text is empty or very short, or if it's an image, try OCR
+        if not text.strip() or not is_pdf:
+            print(f"Low text density or image detected in {file_path}, attempting OCR...")
+            text = extract_text_from_pdf_or_images(file_path, is_pdf=is_pdf)
 
         return text
     except Exception as e:
-        print(f"Error extracting text from PDF {pdf_path}: {e}")
-        # Fallback to OCR if pdfplumber fails
+        print(f"Error extracting text from {file_path}: {e}")
+        # Fallback to OCR if initial attempt fails
         try:
-            return extract_text_from_pdf_or_images(pdf_path, is_pdf=True)
+            return extract_text_from_pdf_or_images(file_path, is_pdf=is_pdf)
         except Exception as ocr_e:
             print(f"OCR fallback also failed: {ocr_e}")
             return ""
@@ -130,7 +132,7 @@ def process_receipts(pdf_paths: list[str], output_pdf: str, model_name: str, oll
 
     for path in pdf_paths:
         print(f"Processing {path}...")
-        text = extract_text_from_pdf(path)
+        text = extract_text_from_file(path)
         date, summary, amount = llm_analyze(text, model_name, ollama_url)
         receipt_data.append({
             "path": path,
