@@ -4,10 +4,15 @@ import pdfplumber
 from pypdf import PdfReader, PdfWriter
 import requests
 
+from rich.live import Live
+from rich.panel import Panel
+from rich.console import Console
+
 import argparse
 import datetime
 import os
 import subprocess
+import sys
 
 def llm_analyze(text: str, model_name: str, ollama_url: str):
     """
@@ -36,7 +41,7 @@ def llm_analyze(text: str, model_name: str, ollama_url: str):
         response.raise_for_status()
         result = response.json().get("response", "")
 
-        date = datetime.date.today()
+        date = datetime.datetime.now()
         summary = "No summary available"
         amount = 0.0
 
@@ -79,7 +84,7 @@ def extract_text_from_file(file_path: str) -> str:
                         text += extracted + "\n"
 
         # If text is empty or very short, or if it's an image, try OCR
-        if not text.strip() or not is_pdf:
+        if len(text.strip()) < 100 or not is_pdf:
             print(f"Low text density or image detected in {file_path}, attempting OCR...")
             text = extract_text_from_pdf_or_images(file_path, is_pdf=is_pdf)
 
@@ -130,19 +135,36 @@ def process_receipts(pdf_paths: list[str], output_pdf: str, model_name: str, oll
     receipt_data = []
     writer = PdfWriter()
 
+    # print the table incrementally
     print(f"| {'File':<15} | {'Date':<10} | {'Summary':<40} | {'Amount':>6} |")
 
     for path in pdf_paths:
-        print(f"| {os.path.basename(path)} ", end='|')
+        # the first column is the file, so don't print a newline
+        print(f"| {os.path.basename(path)[:15]:<15} ", end='|')
         text = extract_text_from_file(path)
-        date, summary, amount = llm_analyze(text, model_name, ollama_url)
+        num_bytes = len(text)
+        text_lines = text.split('\n')
+        num_lines = len(text_lines)
+        if num_lines > 1000:
+            text = '\n'.join(text_lines[:1000])
+            num_lines = 1000
+        elif num_bytes > 10000:
+            text = text[:10000]
+            num_bytes = 10000
+
+        # Use rich.Live to display text being processed
+        with Live(transient=True, refresh_per_second=4) as live:
+            live.update(Panel(text, title=f"Processing ({num_bytes} B, {num_lines} lines)...", height=20, expand=False))
+            date, summary, amount = llm_analyze(text, model_name, ollama_url)
+
         receipt_data.append({
             "path": path,
             "date": date,
             "summary": summary,
             "amount": amount
         })
-        print(f"{date:<10} | {summary:<40} | {amount:>6} |")
+        # print remaining columns
+        print(f"{date:<10} | {summary:<40} | {amount:>6.2f} |")
 
     receipt_data.sort(key=lambda x: x['date'])
 
@@ -153,12 +175,6 @@ def process_receipts(pdf_paths: list[str], output_pdf: str, model_name: str, oll
             writer.add_page(page)
 
     grand_total = sum(item["amount"] for item in receipt_data)
-
-    # Print summary to console
-    print("\n--- Reimbursement Summary ---")
-    for item in receipt_data:
-        print(f"Receipt: {item['path']} | Summary: {item['summary']} | Amount: ${item['amount']:.2f}")
-    print(f"-----------------------------")
     print(f"Grand Total: ${grand_total:.2f}")
 
     coverpage_fn = "./coverpage.pdf"
