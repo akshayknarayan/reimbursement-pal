@@ -130,8 +130,10 @@ def process_receipts(pdf_paths: list[str], output_pdf: str, model_name: str, oll
     receipt_data = []
     writer = PdfWriter()
 
+    print(f"| {'File':<15} | {'Date':<10} | {'Summary':<40} | {'Amount':>6} |")
+
     for path in pdf_paths:
-        print(f"Processing {path}...")
+        print(f"| {os.path.basename(path)} ", end='|')
         text = extract_text_from_file(path)
         date, summary, amount = llm_analyze(text, model_name, ollama_url)
         receipt_data.append({
@@ -140,7 +142,7 @@ def process_receipts(pdf_paths: list[str], output_pdf: str, model_name: str, oll
             "summary": summary,
             "amount": amount
         })
-        print(f"Processed {path}. Date: {date}, Summary: {summary}, Amount: {amount}")
+        print(f"{date:<10} | {summary:<40} | {amount:>6} |")
 
     receipt_data.sort(key=lambda x: x['date'])
 
