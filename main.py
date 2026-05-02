@@ -6,15 +6,17 @@ import requests
 
 from rich.live import Live
 from rich.panel import Panel
-from rich.console import Console
+from rich.table import Table
+from rich import print
 
 import argparse
 import datetime
 import os
+import re
 import subprocess
-import sys
+import time
 
-def llm_analyze(text: str, model_name: str, ollama_url: str):
+def llm_analyze(text: str, model_name: str, ollama_url: str) -> tuple[datetime.datetime, str, float]:
     """
     Invokes an Ollama-hosted model to summarize text and extract the amount.
     """
@@ -37,13 +39,13 @@ def llm_analyze(text: str, model_name: str, ollama_url: str):
     }
 
     try:
-        response = requests.post(ollama_url, json=payload)
-        response.raise_for_status()
-        result = response.json().get("response", "")
-
         date = datetime.datetime.now()
         summary = "No summary available"
         amount = 0.0
+
+        response = requests.post(ollama_url, json=payload)
+        response.raise_for_status()
+        result = response.json().get("response", "")
 
         # Simple parsing logic
         for line in result.split('\n'):
@@ -53,13 +55,17 @@ def llm_analyze(text: str, model_name: str, ollama_url: str):
                 date_str = line.replace("Date:", "").strip().replace("$", "").replace(",", "")
                 try:
                     date = dateparser.parse(date_str)
-                except:
-                    date = datetime.date.today()
+                    if date == None:
+                        raise Exception(f"Could not parse date: {date_str}")
+                except Exception as e:
+                    date = datetime.datetime.now()
             elif line.startswith("Amount:"):
                 amount_str = line.replace("Amount:", "").strip().replace("$", "").replace(",", "")
+                amount_str = re.sub("[^0-9^.]", "", amount_str)
                 try:
                     amount = float(amount_str)
-                except ValueError:
+                except ValueError as e:
+                    print(f"Could not parse amount: {amount_str}: {e}")
                     amount = 0.0
 
         return date, summary, amount
@@ -136,35 +142,39 @@ def process_receipts(pdf_paths: list[str], output_pdf: str, model_name: str, oll
     writer = PdfWriter()
 
     # print the table incrementally
-    print(f"| {'File':<15} | {'Date':<10} | {'Summary':<40} | {'Amount':>6} |")
+    table = Table(title = "Receipts", expand=True)
+    table.add_column("File", max_width=20)
+    table.add_column("Date")
+    table.add_column("Summary", max_width=40)
+    table.add_column("Amount", justify="right")
 
     for path in pdf_paths:
-        # the first column is the file, so don't print a newline
-        print(f"| {os.path.basename(path)[:15]:<15} ", end='|')
         text = extract_text_from_file(path)
         num_bytes = len(text)
-        text_lines = text.split('\n')
-        num_lines = len(text_lines)
-        if num_lines > 1000:
-            text = '\n'.join(text_lines[:1000])
-            num_lines = 1000
-        elif num_bytes > 10000:
+        if num_bytes > 10000:
             text = text[:10000]
             num_bytes = 10000
+        text_lines = text.split('\n')
+        num_lines = len(text_lines)
 
         # Use rich.Live to display text being processed
-        with Live(transient=True, refresh_per_second=4) as live:
-            live.update(Panel(text, title=f"Processing ({num_bytes} B, {num_lines} lines)...", height=20, expand=False))
-            date, summary, amount = llm_analyze(text, model_name, ollama_url)
+        with Live(table, transient=True, auto_refresh=False) as table_live:
+            with Live(transient=True, refresh_per_second=1) as row_live:
+                row_live.update(Panel(text, title=f"Processing {os.path.basename(path)[:15]} ({num_bytes} B, {num_lines} lines)", height=20, expand=False))
+                date, summary, amount = llm_analyze(text, model_name, ollama_url)
 
-        receipt_data.append({
-            "path": path,
-            "date": date,
-            "summary": summary,
-            "amount": amount
-        })
-        # print remaining columns
-        print(f"{date:<10} | {summary:<40} | {amount:>6.2f} |")
+            receipt_data.append({
+                "path": path,
+                "date": date,
+                "summary": summary,
+                "amount": amount
+            })
+
+            # print table row
+            table.add_row(os.path.basename(path), date.strftime("%d %b %Y"), summary, f"${amount:>4.2f}")
+            table_live.refresh()
+
+    print(table)
 
     receipt_data.sort(key=lambda x: x['date'])
 
