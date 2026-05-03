@@ -14,7 +14,6 @@ import datetime
 import os
 import re
 import subprocess
-import time
 
 def llm_analyze(text: str, model_name: str, ollama_url: str) -> tuple[datetime.datetime, str, float]:
     """
@@ -202,8 +201,8 @@ def process_receipts(pdf_paths: list[str], output_pdf: str, model_name: str, oll
 def main():
     parser = argparse.ArgumentParser(description="Process PDF receipts for reimbursement.")
     parser.add_argument("pdfs", nargs="+", help="List of PDF receipts to process")
-    parser.add_argument("--model", "-m", default="gemma4:26b", help="Name of model to use")
-    parser.add_argument("--url-ollama", "-u", default="http://localhost:11434/api/generate", help="Ollama URL serving model")
+    parser.add_argument("--model", "-m", default="gemma4:e4b", help="Name of model to use")
+    parser.add_argument("--url", "-u", default="http://localhost:11434/api/generate", help="URL serving model")
     parser.add_argument("--output", "-o", default="merged_receipts.pdf", help="Output PDF filename")
 
     args = parser.parse_args()
