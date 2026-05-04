@@ -211,7 +211,7 @@ def main():
         print("No PDF files provided.")
         return
 
-    process_receipts(args.pdfs, args.output, args.model, args.url_ollama)
+    process_receipts(args.pdfs, args.output, args.model, args.url)
 
 if __name__ == "__main__":
    main()
