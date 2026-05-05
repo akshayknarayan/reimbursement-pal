@@ -13,9 +13,10 @@ import argparse
 import datetime
 import os
 import subprocess
+import pickle
 
 
-def make_cover_page(receipt_data: list[dict], amount_coords: list[dict], filename: str = "./coverpage.pdf") -> str:
+def make_cover_page(receipt_data: list[dict], filename: str = "./coverpage.pdf") -> str:
     """
     Creates a Markdown file containing a table of receipts with links to amounts in the original PDFs.
     """
@@ -31,10 +32,7 @@ def make_cover_page(receipt_data: list[dict], amount_coords: list[dict], filenam
         date = receipt.get("date", datetime.date.today()).strftime("%d %b %Y")
         description = receipt.get("summary", "No Description")
         amount = receipt.get("amount", 0.0)
-
-        # Find the corresponding amount coordinates
-        coord_info = next((ac for ac in amount_coords if ac["path"] == receipt["path"]), None)
-        coords = coord_info["coords"] if coord_info else None
+        coords = receipt.get("amount_coords", None)
 
         # Add PDF link only if coordinates were found
         if coords:
@@ -57,14 +55,17 @@ def make_cover_page(receipt_data: list[dict], amount_coords: list[dict], filenam
         f.write("\n".join(lines))
 
     # now convert the md to pdf with pandoc
-    subprocess.check_call(["pandoc", "--pdf-engine", "tectonic", "-o", filename, md_path])
+    subprocess.check_call([
+        "pandoc",
+        "--pdf-engine", "tectonic",
+        "-V", "colorlinks=true", "-V", "linkcolor=blue",
+        "-o", filename,
+        md_path])
     os.unlink(md_path)
     return filename
 
-def process_receipts(pdf_paths: list[str], output_pdf: str, model_name: str, ollama_url: str):
+def process_receipts(pdf_paths: list[str], model_name: str, ollama_url: str):
     receipt_data = []
-    writer = PdfWriter()
-    amount_coords = []
 
     # print the table incrementally
     table = Table(title = "Receipts", expand=True)
@@ -92,21 +93,17 @@ def process_receipts(pdf_paths: list[str], output_pdf: str, model_name: str, oll
                 "path": path,
                 "date": date,
                 "summary": summary,
-                "amount": amount
+                "amount": amount,
+                "amount_coords": None,
             })
 
             # Find amount coordinates for this receipt
-            amount_coord = None
             try:
                 page_num_result, x0, y0, x1, y1 = find_text_in_pdf(path, str(amount))
                 amount_coord = (page_num_result, x0, y0, x1, y1)
+                receipt_data[-1]["amount_coords"] = amount_coord
             except Exception as e:
                 print(f"Warning: Could not find coordinates for amount ${amount:.2f} in {path}: {e}")
-
-            amount_coords.append({
-                "path": path,
-                "coords": amount_coord
-            })
 
             # print table row
             table.add_row(os.path.basename(path), date.strftime("%d %b %Y"), summary, f"${amount:>4.2f}")
@@ -115,6 +112,11 @@ def process_receipts(pdf_paths: list[str], output_pdf: str, model_name: str, oll
     print(table)
 
     receipt_data.sort(key=lambda x: x['date'])
+
+    return receipt_data
+
+def write_combined_pdf(receipt_data: list[dict], output_pdf: str):
+    writer = PdfWriter()
 
     for receipt in receipt_data:
         # Add the receipt pages to the writer
@@ -126,7 +128,7 @@ def process_receipts(pdf_paths: list[str], output_pdf: str, model_name: str, oll
     print(f"Grand Total: ${grand_total:.2f}")
 
     coverpage_fn = "./coverpage.pdf"
-    make_cover_page(receipt_data, amount_coords, filename=coverpage_fn)
+    make_cover_page(receipt_data, filename=coverpage_fn)
     reader = PdfReader(coverpage_fn)
     for page in reader.pages:
         writer.insert_page(page, index=0)
@@ -138,19 +140,28 @@ def process_receipts(pdf_paths: list[str], output_pdf: str, model_name: str, oll
     print(f"\nConcatenated PDF saved to: {output_pdf}")
 
 def main():
-    parser = argparse.ArgumentParser(description="Process PDF receipts for reimbursement.")
-    parser.add_argument("pdfs", nargs="+", help="List of PDF receipts to process")
+    parser = argparse.ArgumentParser(description="Process receipts for reimbursement.")
+    parser.add_argument("--receipts", nargs="+", help="List of receipts to process")
+    parser.add_argument("--resume", nargs="?", const="./rpal.pckl", default=None, help="Previous run to resume (save this run if previous not found)")
     parser.add_argument("--model", "-m", default="gemma4:e4b", help="Name of model to use")
     parser.add_argument("--url", "-u", default="http://localhost:11434/api/generate", help="URL serving model")
     parser.add_argument("--output", "-o", default="merged_receipts.pdf", help="Output PDF filename")
 
     args = parser.parse_args()
 
-    if not args.pdfs:
+    if not args.receipts:
         print("No PDF files provided.")
         return
 
-    process_receipts(args.pdfs, args.output, args.model, args.url)
+    if not args.resume or not os.path.exists(args.resume):
+        receipts = process_receipts(args.receipts, args.model, args.url)
+        with open(args.resume, 'wb') as f:
+            pickle.dump(receipts, f)
+    else:
+        with open(args.resume, 'rb') as f:
+            receipts = pickle.load(f)
+
+    write_combined_pdf(receipts, args.output)
 
 if __name__ == "__main__":
    main()

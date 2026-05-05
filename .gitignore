@@ -1,5 +1,6 @@
 *.pdf
 *.md
+*.pckl
 
 __pycache__
 *.py[oc]
