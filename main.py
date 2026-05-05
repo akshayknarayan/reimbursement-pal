@@ -1,8 +1,8 @@
-from ocr_utils import extract_text_from_pdf_or_images
-import dateparser
-import pdfplumber
+from ocr_utils import extract_text_from_file
+from pdf_locate import find_text_in_pdf
+from llm_analyze import llm_analyze
+
 from pypdf import PdfReader, PdfWriter
-import requests
 
 from rich.live import Live
 from rich.panel import Panel
@@ -12,100 +12,12 @@ from rich import print
 import argparse
 import datetime
 import os
-import re
 import subprocess
 
-def llm_analyze(text: str, model_name: str, ollama_url: str) -> tuple[datetime.datetime, str, float]:
+
+def make_cover_page(receipt_data: list[dict], amount_coords: list[dict], filename: str = "./coverpage.pdf") -> str:
     """
-    Invokes an Ollama-hosted model to summarize text and extract the amount.
-    """
-    prompt = f"""
-    Analyze the following text from a receipt.
-    Provide the date, a brief summary (between 4-8 words) of the receipt, and extract the total amount.
-    Return the result in the following format:
-    Date: <date>
-    Summary: <summary>
-    Amount: <amount>
-
-    Text:
-    {text}
-    """
-
-    payload = {
-        "model": model_name,
-        "prompt": prompt,
-        "stream": False
-    }
-
-    try:
-        date = datetime.datetime.now()
-        summary = "No summary available"
-        amount = 0.0
-
-        response = requests.post(ollama_url, json=payload)
-        response.raise_for_status()
-        result = response.json().get("response", "")
-
-        # Simple parsing logic
-        for line in result.split('\n'):
-            if line.startswith("Summary:"):
-                summary = line.replace("Summary:", "").strip()
-            elif line.startswith("Date:"):
-                date_str = line.replace("Date:", "").strip().replace("$", "").replace(",", "")
-                try:
-                    date = dateparser.parse(date_str)
-                    if date == None:
-                        raise Exception(f"Could not parse date: {date_str}")
-                except Exception as e:
-                    date = datetime.datetime.now()
-            elif line.startswith("Amount:"):
-                amount_str = line.replace("Amount:", "").strip().replace("$", "").replace(",", "")
-                amount_str = re.sub("[^0-9^.]", "", amount_str)
-                try:
-                    amount = float(amount_str)
-                except ValueError as e:
-                    print(f"Could not parse amount: {amount_str}: {e}")
-                    amount = 0.0
-
-        return date, summary, amount
-
-    except Exception as e:
-        print(f"Error during LLM analysis: {e}")
-        raise e
-
-def extract_text_from_file(file_path: str) -> str:
-    """
-    Extracts text from a PDF or image using both digital extraction and OCR if necessary.
-    """
-    is_pdf = file_path.lower().endswith(".pdf")
-    try:
-        # First attempt: Use pdfplumber for digital text extraction if it's a PDF
-        text = ""
-        if is_pdf:
-            with pdfplumber.open(file_path) as pdf:
-                for page in pdf.pages:
-                    extracted = page.extract_text()
-                    if extracted:
-                        text += extracted + "\n"
-
-        # If text is empty or very short, or if it's an image, try OCR
-        if len(text.strip()) < 100 or not is_pdf:
-            print(f"Low text density or image detected in {file_path}, attempting OCR...")
-            text = extract_text_from_pdf_or_images(file_path, is_pdf=is_pdf)
-
-        return text
-    except Exception as e:
-        print(f"Error extracting text from {file_path}: {e}")
-        # Fallback to OCR if initial attempt fails
-        try:
-            return extract_text_from_pdf_or_images(file_path, is_pdf=is_pdf)
-        except Exception as ocr_e:
-            print(f"OCR fallback also failed: {ocr_e}")
-            return ""
-
-def make_cover_page(receipt_data: list[dict], filename: str = "./coverpage.pdf") -> str:
-    """
-    Creates a Markdown file containing a table of receipts.
+    Creates a Markdown file containing a table of receipts with links to amounts in the original PDFs.
     """
     lines = [
         "# Receipt Summary",
@@ -119,7 +31,20 @@ def make_cover_page(receipt_data: list[dict], filename: str = "./coverpage.pdf")
         date = receipt.get("date", datetime.date.today()).strftime("%d %b %Y")
         description = receipt.get("summary", "No Description")
         amount = receipt.get("amount", 0.0)
-        lines.append(f"| {date} | {description} | ${amount:,.2f} |")
+
+        # Find the corresponding amount coordinates
+        coord_info = next((ac for ac in amount_coords if ac["path"] == receipt["path"]), None)
+        coords = coord_info["coords"] if coord_info else None
+
+        # Add PDF link only if coordinates were found
+        if coords:
+            page, x0, y0, x1, y1 = coords
+            file_link = f"#page={page}&view=FitH&top={y0}&left={x0}"
+            formatted_amount = f"[${amount:,.2f}]({file_link})"
+        else:
+            formatted_amount = f"${amount:,.2f}"
+
+        lines.append(f"| {date} | {description} | {formatted_amount} |")
 
     grand_total = sum(item["amount"] for item in receipt_data)
     lines.append(f"| | **Grand Total** | **${grand_total:,.2f}** |")
@@ -139,6 +64,7 @@ def make_cover_page(receipt_data: list[dict], filename: str = "./coverpage.pdf")
 def process_receipts(pdf_paths: list[str], output_pdf: str, model_name: str, ollama_url: str):
     receipt_data = []
     writer = PdfWriter()
+    amount_coords = []
 
     # print the table incrementally
     table = Table(title = "Receipts", expand=True)
@@ -169,6 +95,19 @@ def process_receipts(pdf_paths: list[str], output_pdf: str, model_name: str, oll
                 "amount": amount
             })
 
+            # Find amount coordinates for this receipt
+            amount_coord = None
+            try:
+                page_num_result, x0, y0, x1, y1 = find_text_in_pdf(path, str(amount))
+                amount_coord = (page_num_result, x0, y0, x1, y1)
+            except Exception as e:
+                print(f"Warning: Could not find coordinates for amount ${amount:.2f} in {path}: {e}")
+
+            amount_coords.append({
+                "path": path,
+                "coords": amount_coord
+            })
+
             # print table row
             table.add_row(os.path.basename(path), date.strftime("%d %b %Y"), summary, f"${amount:>4.2f}")
             table_live.refresh()
@@ -187,7 +126,7 @@ def process_receipts(pdf_paths: list[str], output_pdf: str, model_name: str, oll
     print(f"Grand Total: ${grand_total:.2f}")
 
     coverpage_fn = "./coverpage.pdf"
-    make_cover_page(receipt_data, filename=coverpage_fn)
+    make_cover_page(receipt_data, amount_coords, filename=coverpage_fn)
     reader = PdfReader(coverpage_fn)
     for page in reader.pages:
         writer.insert_page(page, index=0)

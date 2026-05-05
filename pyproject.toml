@@ -8,6 +8,7 @@ dependencies = [
     "dateparser>=1.4.0",
     "pdf2image>=1.17.0",
     "pdfplumber>=0.11.9",
+    "pymupdf>=1.27.2.3",
     "pypdf>=6.10.2",
     "pytesseract>=0.3.13",
     "requests>=2.33.1",
