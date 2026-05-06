@@ -1,8 +1,7 @@
+import pymupdf
 from ocr_utils import extract_text_from_file
-from pdf_locate import find_text_in_pdf
+from pdf_locate import find_text_in_pdf, find_text_in_pdf_page
 from llm_analyze import llm_analyze
-
-from pypdf import PdfReader, PdfWriter
 
 from rich.live import Live
 from rich.panel import Panel
@@ -18,7 +17,8 @@ import pickle
 
 def make_cover_page(receipt_data: list[dict], filename: str = "./coverpage.pdf") -> str:
     """
-    Creates a Markdown file containing a table of receipts with links to amounts in the original PDFs.
+    Creates a Markdown file containing a table of receipts.
+    This function only creates the cover page, so it cannot generate links from the coverpage to the receipts - must do this later.
     """
     lines = [
         "# Receipt Summary",
@@ -27,29 +27,19 @@ def make_cover_page(receipt_data: list[dict], filename: str = "./coverpage.pdf")
         "| :--- | :--- | :--- |"
     ]
 
+    # First pass: create table without links
     for receipt in receipt_data:
-        # Note: process_receipts uses 'date, 'summary', and 'amount' in its dictionary
         date = receipt.get("date", datetime.date.today()).strftime("%d %b %Y")
         description = receipt.get("summary", "No Description")
         amount = receipt.get("amount", 0.0)
-        coords = receipt.get("amount_coords", None)
 
-        # Add PDF link only if coordinates were found
-        if coords:
-            page, x0, y0, x1, y1 = coords
-            file_link = f"#page={page}&view=FitH&top={y0}&left={x0}"
-            formatted_amount = f"[${amount:,.2f}]({file_link})"
-        else:
-            formatted_amount = f"${amount:,.2f}"
-
+        # Don't add PDF link yet - will be added in post-processing
+        formatted_amount = f"${amount:,.2f}"
         lines.append(f"| {date} | {description} | {formatted_amount} |")
 
     grand_total = sum(item["amount"] for item in receipt_data)
     lines.append(f"| | **Grand Total** | **${grand_total:,.2f}** |")
 
-    # We'll use a markdown file as intermediate, but the caller expects a pdf path
-    # In a real scenario, you'd convert md to pdf here.
-    # For now, we follow the prompt's structure of returning a path.
     md_path = filename.replace(".pdf", ".md")
     with open(md_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
@@ -62,17 +52,54 @@ def make_cover_page(receipt_data: list[dict], filename: str = "./coverpage.pdf")
         "-o", filename,
         md_path])
     os.unlink(md_path)
+
+    # Return pdf_path. Need to post-process later to add the links
     return filename
 
-def process_receipts(pdf_paths: list[str], model_name: str, ollama_url: str):
-    receipt_data = []
+def add_links(receipt_data: list[dict], doc: pymupdf.Document):
+    """
+    Add links to the PDF in `writer` according to `amount_coords` in `receipt_data`.
+    """
+    # Get the first page (coverpage) which is where we'll add the links
+    coverpage = doc[0]
 
-    # print the table incrementally
+    # First pass: determine all receipt positions
+    curr_page_num = 1
+    for receipt in receipt_data:
+        # Skip if no amount coordinates
+        if "amount_coords" not in receipt or receipt["amount_coords"] is None:
+            continue
+
+        amount_text = receipt["amount"]
+        coverpage_loc = find_text_in_pdf_page(coverpage, str(amount_text))
+        pdf_loc = receipt["amount_coords"]
+        # Find the actual page number in our writer (excluding coverpage)
+        target_page_num = curr_page_num + pdf_loc.page_num
+
+        # Create the link annotation
+        coverpage.insert_link({
+            "kind": pymupdf.LINK_GOTO,
+            "page": target_page_num,
+            "from": pymupdf.Rect(coverpage_loc.x0, coverpage_loc.y0, coverpage_loc.x1, coverpage_loc.y1),
+            "to": pymupdf.Point(pdf_loc.x0, pdf_loc.y0)
+        })
+        curr_page_num += pdf_loc.tot_pages
+
+    print(f"Added links to coverpage")
+
+def receipt_table():
     table = Table(title = "Receipts", expand=True)
     table.add_column("File", max_width=20)
     table.add_column("Date")
     table.add_column("Summary", max_width=40)
     table.add_column("Amount", justify="right")
+    return table
+
+def process_receipts(pdf_paths: list[str], model_name: str, ollama_url: str):
+    receipt_data = []
+
+    # print the table incrementally
+    table = receipt_table()
 
     for path in pdf_paths:
         text = extract_text_from_file(path)
@@ -99,9 +126,7 @@ def process_receipts(pdf_paths: list[str], model_name: str, ollama_url: str):
 
             # Find amount coordinates for this receipt
             try:
-                page_num_result, x0, y0, x1, y1 = find_text_in_pdf(path, str(amount))
-                amount_coord = (page_num_result, x0, y0, x1, y1)
-                receipt_data[-1]["amount_coords"] = amount_coord
+                receipt_data[-1]["amount_coords"] = find_text_in_pdf(path, str(amount))
             except Exception as e:
                 print(f"Warning: Could not find coordinates for amount ${amount:.2f} in {path}: {e}")
 
@@ -113,29 +138,33 @@ def process_receipts(pdf_paths: list[str], model_name: str, ollama_url: str):
 
     receipt_data.sort(key=lambda x: x['date'])
 
-    return receipt_data
-
-def write_combined_pdf(receipt_data: list[dict], output_pdf: str):
-    writer = PdfWriter()
-
-    for receipt in receipt_data:
-        # Add the receipt pages to the writer
-        reader = PdfReader(receipt['path'])
-        for page in reader.pages:
-            writer.add_page(page)
-
     grand_total = sum(item["amount"] for item in receipt_data)
     print(f"Grand Total: ${grand_total:.2f}")
 
+    return receipt_data
+
+def write_combined_pdf(receipt_data: list[dict], output_pdf: str):
+    doc = pymupdf.Document()
+
+    # Make the initial coverpage
     coverpage_fn = "./coverpage.pdf"
     make_cover_page(receipt_data, filename=coverpage_fn)
-    reader = PdfReader(coverpage_fn)
-    for page in reader.pages:
-        writer.insert_page(page, index=0)
+    # Add the coverpage first
+    doc.insert_pdf(pymupdf.open(coverpage_fn))
+
+    # Add all the receipt pages to the writer
+    for receipt in receipt_data:
+        with pymupdf.open(receipt['path']) as pages:
+            doc.insert_pdf(pages)
+
+    # add links into the pdf
+    add_links(receipt_data, doc)
 
     # Save the concatenated PDF
-    with open(output_pdf, "wb") as f:
-        writer.write(f)
+    doc.save(output_pdf)
+    doc.close()
+
+    # remove the temporary coverpage pdf
     os.unlink(coverpage_fn)
     print(f"\nConcatenated PDF saved to: {output_pdf}")
 
@@ -160,6 +189,10 @@ def main():
     else:
         with open(args.resume, 'rb') as f:
             receipts = pickle.load(f)
+        table = receipt_table()
+        for r in receipts:
+            table.add_row(os.path.basename(r['path']), r['date'].strftime("%d %b %Y"), r['summary'], f"${r['amount']:>4.2f}")
+        print(table)
 
     write_combined_pdf(receipts, args.output)
 
