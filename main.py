@@ -48,7 +48,6 @@ def make_cover_page(receipt_data: list[dict], filename: str = "./coverpage.pdf")
     subprocess.check_call([
         "pandoc",
         "--pdf-engine", "tectonic",
-        "-V", "colorlinks=true", "-V", "linkcolor=blue",
         "-o", filename,
         md_path])
     os.unlink(md_path)
@@ -66,7 +65,21 @@ def add_links(receipt_data: list[dict], doc: pymupdf.Document):
     # First pass: determine all receipt positions
     curr_page_num = 1
     for receipt in receipt_data:
-        # Skip if no amount coordinates
+        # First link from coverpage summary to receipt start
+        summary = receipt["summary"]
+        coverpage_loc = find_text_in_pdf_page(coverpage, summary)
+        coverpage_summary_rect = pymupdf.Rect(coverpage_loc.x0, coverpage_loc.y0, coverpage_loc.x1, coverpage_loc.y1)
+        annot = coverpage.add_rect_annot(coverpage_summary_rect)
+        annot.set_colors(stroke=(0.2,0.8,0.2))
+        annot.update()
+        coverpage.insert_link({
+            "kind": pymupdf.LINK_GOTO,
+            "page": curr_page_num,
+            "from": coverpage_summary_rect,
+            "to": pymupdf.Point(0, 0)
+        })
+
+        # Second link the amount coordinates
         if "amount_coords" not in receipt or receipt["amount_coords"] is None:
             continue
 
@@ -77,12 +90,17 @@ def add_links(receipt_data: list[dict], doc: pymupdf.Document):
         target_page_num = curr_page_num + pdf_loc.page_num
 
         # Create the link annotation
+        link_rect = pymupdf.Rect(coverpage_loc.x0, coverpage_loc.y0, coverpage_loc.x1, coverpage_loc.y1)
+        annot = coverpage.add_rect_annot(link_rect)
+        annot.set_colors(stroke=(0.2,0.8,0.2))
+        annot.update()
         coverpage.insert_link({
             "kind": pymupdf.LINK_GOTO,
             "page": target_page_num,
-            "from": pymupdf.Rect(coverpage_loc.x0, coverpage_loc.y0, coverpage_loc.x1, coverpage_loc.y1),
+            "from": link_rect,
             "to": pymupdf.Point(pdf_loc.x0, pdf_loc.y0)
         })
+
         curr_page_num += pdf_loc.tot_pages
 
     print(f"Added links to coverpage")
