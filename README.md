@@ -11,6 +11,7 @@ Process an input list of pdf receipts related to a reimbursement request.
 ### PDF manipulation tasks:
 - produce a cover page, with items for each receipt and a grand total.
 - concatenate the receipts together.
+- link from the table in the cover page to the receipts, so it's easy to tell where each piece of information came from.
 
 ## Running
 
@@ -23,12 +24,12 @@ The default assumes the model server is at `localhost:11434/api/generate` (the o
 To run `main.py`, we use `uv` for dependency management. 
 Main dependencies are:
 - `pdfplumber` to extract text from pdfs: `https://github.com/jsvine/pdfplumber`. 
-- `pypdf` to concatenate pdfs: `https://github.com/py-pdf/pypdf`.
-- `pytesseract` for OCR
+- `pymupdf` to concatenate pdfs and add links
+- `pytesseract` and `pdf2image` for OCR
 - `rich` for pretty-printing to terminal
 
 ### Example
 
 ```
-uv run main.py -m gemma4:e4b -o <my_trip.pdf> <folder>/*
+uv run main.py -m gemma4:e4b -o <my_trip.pdf> --receipts <folder>/*
 ```
