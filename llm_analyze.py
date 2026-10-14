@@ -9,7 +9,7 @@ def llm_analyze(text: str, model_name: str, ollama_url: str) -> tuple[datetime.d
     """
     prompt = f"""
     Analyze the following text from a receipt.
-    Provide the date, a brief summary (between 4-8 words) of the receipt, and extract the total amount.
+    Provide the date, a brief summary (between 4-8 words) of the receipt, and extract the total amount to reimburse.
     Return the result in the following format:
     Date: <date>
     Summary: <summary>
