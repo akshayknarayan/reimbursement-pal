@@ -78,3 +78,8 @@ def extract_text_from_pdf_or_images(source_path: str, is_pdf: bool = True) -> st
     except Exception as e:
         logger.error(f"Error during OCR process for {source_path}: {e}")
         return ""
+
+if __name__ == '__main__':
+    import sys
+    txt = extract_text_from_file(sys.argv[1])
+    print(sys.argv[1], txt)
