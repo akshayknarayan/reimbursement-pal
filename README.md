@@ -13,6 +13,7 @@ Process an input list of pdf receipts related to a reimbursement request.
 
 ### Review
 After the receipts are processed, an interactive prompt lets you edit each receipt's summary, category, and amount, and the trip's city, start, and end dates, and whether to include per diem.
+It also previews the per diem amount and the resulting grand total.
 With `--resume`, these edits are saved along with the receipts.
 
 ### Per diem

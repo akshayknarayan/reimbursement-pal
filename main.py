@@ -216,7 +216,19 @@ def trip_settings(receipt_data: list[dict], trip: dict) -> tuple[str | None, dat
     include = trip["per_diem"] if trip["per_diem"] is not None else (not has_food(receipt_data) and bool(city))
     return city, start, end, include
 
-def print_trip(receipt_data: list[dict], trip: dict):
+def per_diem_preview(receipt_data: list[dict], trip: dict) -> tuple[dict | None, str | None]:
+    """
+    Compute the per diem entry for the trip (whether or not it's included). Returns (entry, error message).
+    """
+    city, start, end, _ = trip_settings(receipt_data, trip)
+    if not city:
+        return None, None
+    try:
+        return compute_per_diem(city, start, end), None
+    except Exception as e:
+        return None, str(e)
+
+def print_trip(receipt_data: list[dict], trip: dict, per_diem: dict | None, per_diem_error: str | None):
     city, start, end, include = trip_settings(receipt_data, trip)
     auto = lambda key: "" if trip[key] is not None else " [dim](auto)[/dim]"
     if trip["per_diem"] is None:
@@ -224,20 +236,38 @@ def print_trip(receipt_data: list[dict], trip: dict):
         include_str = f"{'yes' if include else 'no'} [dim](auto: {why})[/dim]"
     else:
         include_str = "yes" if include else "no"
+
+    if per_diem_error:
+        amount_str = f"[red]{per_diem_error}[/red]"
+    elif per_diem:
+        amount_str = f"${per_diem['amount']:,.2f} [dim]({per_diem['summary']})[/dim]"
+        if not include:
+            amount_str += " [dim](not included)[/dim]"
+    else:
+        amount_str = "[dim](set a city)[/dim]"
+
+    receipts_total = sum(r["amount"] for r in receipt_data)
+    if include and per_diem:
+        total_str = f"${receipts_total:,.2f} receipts + ${per_diem['amount']:,.2f} per diem = [bold]${receipts_total + per_diem['amount']:,.2f}[/bold]"
+    else:
+        total_str = f"[bold]${receipts_total:,.2f}[/bold]"
+
     print(Panel(
         f"City:     {(city + auto('city')) if city else '[dim](not set)[/dim]'}\n"
         f"Start:    {start.strftime('%d %b %Y')}{auto('start')}\n"
         f"End:      {end.strftime('%d %b %Y')}{auto('end')}\n"
-        f"Per diem: {include_str}",
+        f"Per diem: {include_str}\n"
+        f"Amount:   {amount_str}\n"
+        f"Total:    {total_str}",
         title="Trip", expand=False))
 
 def prompt_date(label: str, current: datetime.date | None) -> datetime.date | None:
     """
-    Prompt for a date; an empty answer resets to automatic (None).
+    Prompt for a date; an empty answer keeps the current value, and "auto" resets to automatic (None).
     """
     while True:
-        answer = Prompt.ask(f"{label} (blank for auto)", default=current.isoformat() if current else "", show_default=bool(current))
-        if not answer.strip():
+        answer = Prompt.ask(f"{label} ('auto' to derive from receipts)", default=current.isoformat() if current else "auto")
+        if answer.strip().lower() == "auto":
             return None
         parsed = dateparser.parse(answer)
         if parsed:
@@ -262,14 +292,16 @@ def review(receipt_data: list[dict], trip: dict) -> bool:
     """
     help_text = "[bold]<n>[/bold] edit receipt n, [bold]c[/bold] city, [bold]s[/bold] start, [bold]e[/bold] end, [bold]p[/bold] toggle per diem, [bold]d[/bold] done, [bold]q[/bold] quit"
     while True:
+        per_diem, per_diem_error = per_diem_preview(receipt_data, trip)
         print_receipts(receipt_data)
-        print_trip(receipt_data, trip)
+        print_trip(receipt_data, trip, per_diem, per_diem_error)
         print(help_text)
         cmd = Prompt.ask("Command", default="d").strip().lower()
         if cmd.isdigit() and 1 <= int(cmd) <= len(receipt_data):
             edit_receipt(receipt_data[int(cmd) - 1])
         elif cmd == "c":
-            trip["city"] = Prompt.ask("City ('City, ST' or ZIP code, blank for auto)", default=trip["city"] or "", show_default=bool(trip["city"])).strip() or None
+            city = Prompt.ask("City ('City, ST' or ZIP code, 'auto' to guess from receipts)", default=trip["city"] or "auto").strip()
+            trip["city"] = None if city.lower() in ("", "auto") else city
         elif cmd == "s":
             trip["start"] = prompt_date("Trip start", trip["start"])
         elif cmd == "e":
@@ -277,9 +309,9 @@ def review(receipt_data: list[dict], trip: dict) -> bool:
         elif cmd == "p":
             trip["per_diem"] = not trip_settings(receipt_data, trip)[3]
         elif cmd == "d":
-            city, _, _, include = trip_settings(receipt_data, trip)
-            if include and not city:
-                print("[red]Set a city (c) to include per diem.[/red]")
+            _, _, _, include = trip_settings(receipt_data, trip)
+            if include and not per_diem:
+                print(f"[red]Can't compute per diem: {per_diem_error or 'set a city (c)'}. Fix it or turn off per diem (p).[/red]")
                 continue
             return True
         elif cmd == "q":

@@ -1,5 +1,6 @@
 import requests
 import datetime
+import functools
 import os
 
 GSA_API_BASE = "https://api.gsa.gov/travel/perdiem/v2/rates"
@@ -10,6 +11,8 @@ def fiscal_year(date: datetime.date) -> int:
     """
     return date.year + 1 if date.month >= 10 else date.year
 
+# cached so that previewing the per diem while editing doesn't repeat requests
+@functools.cache
 def lookup_mie_rate(location: str, year: int, api_key: str) -> tuple[float, str]:
     """
     Look up the daily M&IE (meals and incidental expenses) rate from GSA for a CONUS location.
@@ -43,6 +46,7 @@ def lookup_mie_rate(location: str, year: int, api_key: str) -> tuple[float, str]
 
     return float(rate["meals"]), rate.get("city") or location
 
+@functools.cache
 def first_last_day_rate(mie_rate: float, year: int, api_key: str) -> float:
     """
     The rate for the first and last day of travel is 75% of the full M&IE rate.
