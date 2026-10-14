@@ -3,9 +3,9 @@ import requests
 import datetime
 import re
 
-def llm_analyze(text: str, model_name: str, ollama_url: str) -> tuple[datetime.datetime, str, float, str, datetime.datetime | None, datetime.datetime | None]:
+def llm_analyze(text: str, model_name: str, ollama_url: str) -> tuple[datetime.datetime, str, float, str, datetime.datetime | None, datetime.datetime | None, str | None]:
     """
-    Invokes an Ollama-hosted model to summarize text, extract the amount, categorize the expense, and extract any travel dates.
+    Invokes an Ollama-hosted model to summarize text, extract the amount, categorize the expense, and extract any travel dates and location.
     """
     prompt = f"""
     Analyze the following text from a receipt.
@@ -16,12 +16,16 @@ def llm_analyze(text: str, model_name: str, ollama_url: str) -> tuple[datetime.d
     for example, a flight's departure and return dates, or a hotel's check-in and check-out dates.
     If the receipt covers a single day of travel, give that date as both start and end.
     If the receipt does not show any travel dates, write "none".
+    Also provide the US city and two-letter state abbreviation where the expense took place, as "City, ST":
+    for example, the hotel's or restaurant's city. For a flight or train ticket, use the destination city, not the origin.
+    If the receipt does not show a location, write "none".
     Return the result in the following format:
     Date: <date>
     Summary: <summary>
     Amount: <amount>
     Category: <category>
     Travel dates: <start date> to <end date>
+    Location: <City, ST>
 
     Text:
     {text}
@@ -39,6 +43,7 @@ def llm_analyze(text: str, model_name: str, ollama_url: str) -> tuple[datetime.d
         amount = 0.0
         category = "other"
         travel_start, travel_end = None, None
+        location = None
 
         response = requests.post(ollama_url, json=payload)
         response.raise_for_status()
@@ -75,8 +80,14 @@ def llm_analyze(text: str, model_name: str, ollama_url: str) -> tuple[datetime.d
                     if travel_start is None or travel_end is None:
                         print(f"Could not parse travel dates: {travel_str}")
                         travel_start, travel_end = None, None
+            elif line.startswith("Location:"):
+                location_str = line.replace("Location:", "").strip()
+                # only accept "City, ST", which is what the GSA lookup needs
+                if re.fullmatch(r"[^,]+,\s*[A-Za-z]{2}", location_str):
+                    city, state = location_str.split(",")
+                    location = f"{city.strip()}, {state.strip().upper()}"
 
-        return date, summary, amount, category, travel_start, travel_end
+        return date, summary, amount, category, travel_start, travel_end, location
 
     except Exception as e:
         print(f"Error during LLM analysis: {e}")

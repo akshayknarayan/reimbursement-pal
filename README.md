@@ -9,6 +9,7 @@ Process an input list of pdf receipts related to a reimbursement request.
 - for each receipt, extract the amount of reimbursement the receipt represents.
 - for each receipt, categorize it (food, lodging, transportation, other).
 - for each receipt, extract the travel dates it covers (e.g., flight or hotel dates), if any.
+- for each receipt, extract the city where the expense took place (for flights, the destination), if any.
 
 ### Review
 After the receipts are processed, an interactive prompt lets you edit each receipt's summary, category, and amount, and the trip's city, start, and end dates, and whether to include per diem.
@@ -16,7 +17,8 @@ With `--resume`, these edits are saved along with the receipts.
 
 ### Per diem
 A meals & incidental expenses (M&IE) per diem line can be added using the [GSA rates](https://www.gsa.gov/travel/plan-book/per-diem-rates) for the trip's fiscal year(s), with the first and last days at 75%.
-By default it's included when a trip city (`"City, ST"` or a ZIP code) is set and no receipt is categorized as food.
+By default it's included when there is a trip city (`"City, ST"` or a ZIP code) and no receipt is categorized as food.
+The trip city defaults to the most common location on the receipts, preferring hotel receipts.
 Trip dates default to the earliest/latest travel dates shown on the receipts (e.g., flight departure/return, hotel check-in/check-out), falling back to the receipts' transaction dates if none show travel dates.
 Rates come from the [GSA per diem API](https://open.gsa.gov/api/perdiem/). The shared `DEMO_KEY` is rate-limited, so set `GSA_API_KEY` to your own (free) key.
 

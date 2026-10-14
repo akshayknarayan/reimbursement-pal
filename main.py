@@ -17,6 +17,7 @@ import os
 import subprocess
 import pickle
 import sys
+from collections import Counter
 
 CATEGORIES = ["food", "lodging", "transportation", "other"]
 
@@ -153,7 +154,7 @@ def process_receipts(pdf_paths: list[str], model_name: str, ollama_url: str):
         with Live(table, transient=True, auto_refresh=False) as table_live:
             with Live(transient=True, refresh_per_second=1) as row_live:
                 row_live.update(Panel(text, title=f"Processing {os.path.basename(path)[:15]} ({num_bytes} B, {num_lines} lines)", height=20, expand=False))
-                date, summary, amount, category, travel_start, travel_end = llm_analyze(text, model_name, ollama_url)
+                date, summary, amount, category, travel_start, travel_end, location = llm_analyze(text, model_name, ollama_url)
 
             receipt_data.append({
                 "path": path,
@@ -164,6 +165,7 @@ def process_receipts(pdf_paths: list[str], model_name: str, ollama_url: str):
                 "category": category,
                 "travel_start": travel_start,
                 "travel_end": travel_end,
+                "location": location,
             })
 
             # Find amount coordinates for this receipt
@@ -193,26 +195,37 @@ def default_trip_dates(receipt_data: list[dict]) -> tuple[datetime.date, datetim
         return min(r["travel_start"] for r in travel).date(), max(r["travel_end"] for r in travel).date()
     return min(r["date"] for r in receipt_data).date(), max(r["date"] for r in receipt_data).date()
 
-def trip_settings(receipt_data: list[dict], trip: dict) -> tuple[datetime.date, datetime.date, bool]:
+def default_trip_city(receipt_data: list[dict]) -> str | None:
     """
-    Resolve the trip start, end, and whether to include per diem. Unset (None) values in `trip` are derived from the receipts.
+    The most common location on the receipts, preferring lodging receipts since those best indicate where the trip was.
     """
+    lodging = [r["location"] for r in receipt_data if r.get("location") and r.get("category") == "lodging"]
+    locations = lodging or [r["location"] for r in receipt_data if r.get("location")]
+    if not locations:
+        return None
+    return Counter(locations).most_common(1)[0][0]
+
+def trip_settings(receipt_data: list[dict], trip: dict) -> tuple[str | None, datetime.date, datetime.date, bool]:
+    """
+    Resolve the trip city, start, end, and whether to include per diem. Unset (None) values in `trip` are derived from the receipts.
+    """
+    city = trip["city"] or default_trip_city(receipt_data)
     default_start, default_end = default_trip_dates(receipt_data)
     start = trip["start"] or default_start
     end = trip["end"] or default_end
-    include = trip["per_diem"] if trip["per_diem"] is not None else (not has_food(receipt_data) and bool(trip["city"]))
-    return start, end, include
+    include = trip["per_diem"] if trip["per_diem"] is not None else (not has_food(receipt_data) and bool(city))
+    return city, start, end, include
 
 def print_trip(receipt_data: list[dict], trip: dict):
-    start, end, include = trip_settings(receipt_data, trip)
+    city, start, end, include = trip_settings(receipt_data, trip)
     auto = lambda key: "" if trip[key] is not None else " [dim](auto)[/dim]"
     if trip["per_diem"] is None:
-        why = "food receipts found" if has_food(receipt_data) else ("no food receipts" if trip["city"] else "no city set")
+        why = "food receipts found" if has_food(receipt_data) else ("no food receipts" if city else "no city set")
         include_str = f"{'yes' if include else 'no'} [dim](auto: {why})[/dim]"
     else:
         include_str = "yes" if include else "no"
     print(Panel(
-        f"City:     {trip['city'] or '[dim](not set)[/dim]'}\n"
+        f"City:     {(city + auto('city')) if city else '[dim](not set)[/dim]'}\n"
         f"Start:    {start.strftime('%d %b %Y')}{auto('start')}\n"
         f"End:      {end.strftime('%d %b %Y')}{auto('end')}\n"
         f"Per diem: {include_str}",
@@ -256,16 +269,16 @@ def review(receipt_data: list[dict], trip: dict) -> bool:
         if cmd.isdigit() and 1 <= int(cmd) <= len(receipt_data):
             edit_receipt(receipt_data[int(cmd) - 1])
         elif cmd == "c":
-            trip["city"] = Prompt.ask("City ('City, ST' or ZIP code)", default=trip["city"] or "").strip() or None
+            trip["city"] = Prompt.ask("City ('City, ST' or ZIP code, blank for auto)", default=trip["city"] or "", show_default=bool(trip["city"])).strip() or None
         elif cmd == "s":
             trip["start"] = prompt_date("Trip start", trip["start"])
         elif cmd == "e":
             trip["end"] = prompt_date("Trip end", trip["end"])
         elif cmd == "p":
-            trip["per_diem"] = not trip_settings(receipt_data, trip)[2]
+            trip["per_diem"] = not trip_settings(receipt_data, trip)[3]
         elif cmd == "d":
-            _, _, include = trip_settings(receipt_data, trip)
-            if include and not trip["city"]:
+            city, _, _, include = trip_settings(receipt_data, trip)
+            if include and not city:
                 print("[red]Set a city (c) to include per diem.[/red]")
                 continue
             return True
@@ -341,9 +354,9 @@ def main():
         return
 
     output = list(receipts)
-    start, end, include = trip_settings(receipts, trip)
+    city, start, end, include = trip_settings(receipts, trip)
     if include:
-        per_diem = compute_per_diem(trip["city"], start, end)
+        per_diem = compute_per_diem(city, start, end)
         print(f"Adding {per_diem['summary']} (${per_diem['amount']:,.2f})")
         output.append(per_diem)
 
