@@ -10,9 +10,14 @@ Process an input list of pdf receipts related to a reimbursement request.
 - for each receipt, categorize it (food, lodging, transportation, other).
 - for each receipt, extract the travel dates it covers (e.g., flight or hotel dates), if any.
 
+### Review
+After the receipts are processed, an interactive prompt lets you edit each receipt's summary, category, and amount, and the trip's city, start, and end dates, and whether to include per diem.
+With `--resume`, these edits are saved along with the receipts.
+
 ### Per diem
-If `--per-diem-location` is given (`"City, ST"` or a ZIP code) and no receipt is categorized as food, a meals & incidental expenses (M&IE) per diem line is added using the [GSA rates](https://www.gsa.gov/travel/plan-book/per-diem-rates) for the trip's fiscal year(s), with the first and last days at 75%.
-Trip dates default to the earliest/latest travel dates shown on the receipts (e.g., flight departure/return, hotel check-in/check-out), falling back to the receipts' transaction dates if none show travel dates; override with `--trip-start` / `--trip-end`.
+A meals & incidental expenses (M&IE) per diem line can be added using the [GSA rates](https://www.gsa.gov/travel/plan-book/per-diem-rates) for the trip's fiscal year(s), with the first and last days at 75%.
+By default it's included when a trip city (`"City, ST"` or a ZIP code) is set and no receipt is categorized as food.
+Trip dates default to the earliest/latest travel dates shown on the receipts (e.g., flight departure/return, hotel check-in/check-out), falling back to the receipts' transaction dates if none show travel dates.
 Rates come from the [GSA per diem API](https://open.gsa.gov/api/perdiem/). The shared `DEMO_KEY` is rate-limited, so set `GSA_API_KEY` to your own (free) key.
 
 ### PDF manipulation tasks:
@@ -39,5 +44,4 @@ Main dependencies are:
 
 ```
 uv run main.py -m gemma4:e4b -o <my_trip.pdf> --receipts <folder>/*
-uv run main.py -o <my_trip.pdf> --per-diem-location "Providence, RI" --trip-start 2026-10-01 --trip-end 2026-10-04 --receipts <folder>/*
 ```

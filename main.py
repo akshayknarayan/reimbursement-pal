@@ -7,6 +7,7 @@ from per_diem import compute_per_diem
 from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
+from rich.prompt import Prompt, FloatPrompt
 from rich import print
 
 import argparse
@@ -15,6 +16,9 @@ import dateparser
 import os
 import subprocess
 import pickle
+import sys
+
+CATEGORIES = ["food", "lodging", "transportation", "other"]
 
 
 def make_cover_page(receipt_data: list[dict], filename: str = "./coverpage.pdf") -> str:
@@ -113,11 +117,22 @@ def add_links(receipt_data: list[dict], doc: pymupdf.Document):
 
 def receipt_table():
     table = Table(title = "Receipts", expand=True)
+    table.add_column("#", justify="right")
     table.add_column("File", max_width=20)
     table.add_column("Date")
     table.add_column("Summary", max_width=40)
+    table.add_column("Category")
     table.add_column("Amount", justify="right")
     return table
+
+def add_receipt_row(table: Table, i: int, r: dict):
+    table.add_row(str(i), os.path.basename(r['path']), r['date'].strftime("%d %b %Y"), r['summary'], r.get('category', '?'), f"${r['amount']:>4.2f}")
+
+def print_receipts(receipt_data: list[dict]):
+    table = receipt_table()
+    for i, r in enumerate(receipt_data, 1):
+        add_receipt_row(table, i, r)
+    print(table)
 
 def process_receipts(pdf_paths: list[str], model_name: str, ollama_url: str):
     receipt_data = []
@@ -158,35 +173,106 @@ def process_receipts(pdf_paths: list[str], model_name: str, ollama_url: str):
                 print(f"Warning: Could not find coordinates for amount ${amount:.2f} in {path}: {e}")
 
             # print table row
-            table.add_row(os.path.basename(path), date.strftime("%d %b %Y"), summary, f"${amount:>4.2f}")
+            add_receipt_row(table, len(receipt_data), receipt_data[-1])
             table_live.refresh()
 
     print(table)
+    receipt_data.sort(key=lambda x: x['date'])
     return receipt_data
 
-def add_per_diem(receipt_data: list[dict], location: str, trip_start: str | None, trip_end: str | None):
+def has_food(receipt_data: list[dict]) -> bool:
+    return any(r.get("category") == "food" for r in receipt_data)
+
+def default_trip_dates(receipt_data: list[dict]) -> tuple[datetime.date, datetime.date]:
     """
-    If none of the receipts are for food, add a GSA M&IE per diem entry for the trip.
-    Trip dates default to the range of travel dates on the receipts (e.g., flight or hotel dates),
+    The range of travel dates on the receipts (e.g., flight or hotel dates),
     falling back to the receipts' transaction dates if no receipt shows travel dates.
     """
-    if any("category" not in r for r in receipt_data):
-        print("[yellow]Warning: some receipts have no category (saved by an older version?); re-run without --resume to check for food receipts.[/yellow]")
-    food = [r for r in receipt_data if r.get("category") == "food"]
-    if food:
-        print(f"Found {len(food)} food receipt(s); not adding per diem.")
-        return
-
     travel = [r for r in receipt_data if r.get("travel_start") and r.get("travel_end")]
-    if not travel and not (trip_start and trip_end):
-        print("[yellow]Warning: no receipts show travel dates; using receipt transaction dates for the per diem. Pass --trip-start/--trip-end to override.[/yellow]")
-    start = dateparser.parse(trip_start).date() if trip_start else \
-        min(r["travel_start"] for r in travel).date() if travel else min(r["date"] for r in receipt_data).date()
-    end = dateparser.parse(trip_end).date() if trip_end else \
-        max(r["travel_end"] for r in travel).date() if travel else max(r["date"] for r in receipt_data).date()
-    per_diem = compute_per_diem(location, start, end)
-    print(f"No food receipts found; adding {per_diem['summary']} (${per_diem['amount']:,.2f})")
-    receipt_data.append(per_diem)
+    if travel:
+        return min(r["travel_start"] for r in travel).date(), max(r["travel_end"] for r in travel).date()
+    return min(r["date"] for r in receipt_data).date(), max(r["date"] for r in receipt_data).date()
+
+def trip_settings(receipt_data: list[dict], trip: dict) -> tuple[datetime.date, datetime.date, bool]:
+    """
+    Resolve the trip start, end, and whether to include per diem. Unset (None) values in `trip` are derived from the receipts.
+    """
+    default_start, default_end = default_trip_dates(receipt_data)
+    start = trip["start"] or default_start
+    end = trip["end"] or default_end
+    include = trip["per_diem"] if trip["per_diem"] is not None else (not has_food(receipt_data) and bool(trip["city"]))
+    return start, end, include
+
+def print_trip(receipt_data: list[dict], trip: dict):
+    start, end, include = trip_settings(receipt_data, trip)
+    auto = lambda key: "" if trip[key] is not None else " [dim](auto)[/dim]"
+    if trip["per_diem"] is None:
+        why = "food receipts found" if has_food(receipt_data) else ("no food receipts" if trip["city"] else "no city set")
+        include_str = f"{'yes' if include else 'no'} [dim](auto: {why})[/dim]"
+    else:
+        include_str = "yes" if include else "no"
+    print(Panel(
+        f"City:     {trip['city'] or '[dim](not set)[/dim]'}\n"
+        f"Start:    {start.strftime('%d %b %Y')}{auto('start')}\n"
+        f"End:      {end.strftime('%d %b %Y')}{auto('end')}\n"
+        f"Per diem: {include_str}",
+        title="Trip", expand=False))
+
+def prompt_date(label: str, current: datetime.date | None) -> datetime.date | None:
+    """
+    Prompt for a date; an empty answer resets to automatic (None).
+    """
+    while True:
+        answer = Prompt.ask(f"{label} (blank for auto)", default=current.isoformat() if current else "", show_default=bool(current))
+        if not answer.strip():
+            return None
+        parsed = dateparser.parse(answer)
+        if parsed:
+            return parsed.date()
+        print(f"[red]Could not parse date: {answer}[/red]")
+
+def edit_receipt(receipt: dict):
+    receipt["summary"] = Prompt.ask("Summary", default=receipt["summary"])
+    receipt["category"] = Prompt.ask("Category", choices=CATEGORIES, default=receipt.get("category") if receipt.get("category") in CATEGORIES else "other")
+    amount = FloatPrompt.ask("Amount", default=receipt["amount"])
+    if amount != receipt["amount"]:
+        receipt["amount"] = amount
+        # the old coordinates point at the old amount
+        try:
+            receipt["amount_coords"] = find_text_in_pdf(receipt["path"], str(amount))
+        except Exception:
+            receipt["amount_coords"] = None
+
+def review(receipt_data: list[dict], trip: dict) -> bool:
+    """
+    Interactively edit receipts and trip settings. Returns False if the user quits.
+    """
+    help_text = "[bold]<n>[/bold] edit receipt n, [bold]c[/bold] city, [bold]s[/bold] start, [bold]e[/bold] end, [bold]p[/bold] toggle per diem, [bold]d[/bold] done, [bold]q[/bold] quit"
+    while True:
+        print_receipts(receipt_data)
+        print_trip(receipt_data, trip)
+        print(help_text)
+        cmd = Prompt.ask("Command", default="d").strip().lower()
+        if cmd.isdigit() and 1 <= int(cmd) <= len(receipt_data):
+            edit_receipt(receipt_data[int(cmd) - 1])
+        elif cmd == "c":
+            trip["city"] = Prompt.ask("City ('City, ST' or ZIP code)", default=trip["city"] or "").strip() or None
+        elif cmd == "s":
+            trip["start"] = prompt_date("Trip start", trip["start"])
+        elif cmd == "e":
+            trip["end"] = prompt_date("Trip end", trip["end"])
+        elif cmd == "p":
+            trip["per_diem"] = not trip_settings(receipt_data, trip)[2]
+        elif cmd == "d":
+            _, _, include = trip_settings(receipt_data, trip)
+            if include and not trip["city"]:
+                print("[red]Set a city (c) to include per diem.[/red]")
+                continue
+            return True
+        elif cmd == "q":
+            return False
+        else:
+            print(f"[red]Unknown command: {cmd}[/red]")
 
 def write_combined_pdf(receipt_data: list[dict], output_pdf: str):
     doc = pymupdf.Document()
@@ -222,9 +308,6 @@ def main():
     parser.add_argument("--model", "-m", default="gemma4:e4b", help="Name of model to use")
     parser.add_argument("--url", "-u", default="http://localhost:11434/api/generate", help="URL serving model")
     parser.add_argument("--output", "-o", default="merged_receipts.pdf", help="Output PDF filename")
-    parser.add_argument("--per-diem-location", help="Trip destination ('City, ST' or ZIP code). If given and no food receipts are found, adds a GSA M&IE per diem")
-    parser.add_argument("--trip-start", help="First day of travel, for per diem (default: earliest travel date on the receipts)")
-    parser.add_argument("--trip-end", help="Last day of travel, for per diem (default: latest travel date on the receipts)")
 
     args = parser.parse_args()
 
@@ -232,27 +315,43 @@ def main():
         print("No PDF files provided.")
         return
 
+    # trip settings; None means derive from the receipts
+    trip = {"city": None, "start": None, "end": None, "per_diem": None}
     if not args.resume or not os.path.exists(args.resume):
         receipts = process_receipts(args.receipts, args.model, args.url)
-        if args.resume:
-            with open(args.resume, 'wb') as f:
-                pickle.dump(receipts, f)
     else:
         with open(args.resume, 'rb') as f:
-            receipts = pickle.load(f)
-        table = receipt_table()
-        for r in receipts:
-            table.add_row(os.path.basename(r['path']), r['date'].strftime("%d %b %Y"), r['summary'], f"${r['amount']:>4.2f}")
-        print(table)
+            saved = pickle.load(f)
+        # older saves are just the list of receipts
+        receipts, trip = (saved["receipts"], saved["trip"]) if isinstance(saved, dict) else (saved, trip)
+        receipts.sort(key=lambda x: x['date'])
+        if any("category" not in r for r in receipts):
+            print("[yellow]Warning: some receipts have no category (saved by an older version?); re-run without --resume to check for food receipts.[/yellow]")
 
-    if args.per_diem_location:
-        add_per_diem(receipts, args.per_diem_location, args.trip_start, args.trip_end)
+    if sys.stdin.isatty():
+        done = review(receipts, trip)
+    else:
+        print_receipts(receipts)
+        done = True
 
-    receipts.sort(key=lambda x: x['date'])
-    grand_total = sum(item["amount"] for item in receipts)
+    if args.resume:
+        with open(args.resume, 'wb') as f:
+            pickle.dump({"receipts": receipts, "trip": trip}, f)
+    if not done:
+        return
+
+    output = list(receipts)
+    start, end, include = trip_settings(receipts, trip)
+    if include:
+        per_diem = compute_per_diem(trip["city"], start, end)
+        print(f"Adding {per_diem['summary']} (${per_diem['amount']:,.2f})")
+        output.append(per_diem)
+
+    output.sort(key=lambda x: x['date'])
+    grand_total = sum(item["amount"] for item in output)
     print(f"Grand Total: ${grand_total:.2f}")
 
-    write_combined_pdf(receipts, args.output)
+    write_combined_pdf(output, args.output)
 
 if __name__ == "__main__":
    main()
