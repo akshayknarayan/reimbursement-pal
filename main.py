@@ -2,6 +2,7 @@ import pymupdf
 from ocr_utils import extract_text_from_file
 from pdf_locate import find_text_in_pdf, find_text_in_pdf_page
 from llm_analyze import llm_analyze
+from per_diem import compute_per_diem
 
 from rich.live import Live
 from rich.panel import Panel
@@ -10,6 +11,7 @@ from rich import print
 
 import argparse
 import datetime
+import dateparser
 import os
 import subprocess
 import pickle
@@ -65,6 +67,10 @@ def add_links(receipt_data: list[dict], doc: pymupdf.Document):
     # First pass: determine all receipt positions
     curr_page_num = 1
     for receipt in receipt_data:
+        # Entries without a receipt file (e.g., per diem) have nothing to link to
+        if receipt.get("path") is None:
+            continue
+
         # First link from coverpage summary to receipt start
         summary = receipt["summary"]
         coverpage_loc = find_text_in_pdf_page(coverpage, summary)
@@ -132,7 +138,7 @@ def process_receipts(pdf_paths: list[str], model_name: str, ollama_url: str):
         with Live(table, transient=True, auto_refresh=False) as table_live:
             with Live(transient=True, refresh_per_second=1) as row_live:
                 row_live.update(Panel(text, title=f"Processing {os.path.basename(path)[:15]} ({num_bytes} B, {num_lines} lines)", height=20, expand=False))
-                date, summary, amount = llm_analyze(text, model_name, ollama_url)
+                date, summary, amount, category, travel_start, travel_end = llm_analyze(text, model_name, ollama_url)
 
             receipt_data.append({
                 "path": path,
@@ -140,6 +146,9 @@ def process_receipts(pdf_paths: list[str], model_name: str, ollama_url: str):
                 "summary": summary,
                 "amount": amount,
                 "amount_coords": None,
+                "category": category,
+                "travel_start": travel_start,
+                "travel_end": travel_end,
             })
 
             # Find amount coordinates for this receipt
@@ -153,13 +162,31 @@ def process_receipts(pdf_paths: list[str], model_name: str, ollama_url: str):
             table_live.refresh()
 
     print(table)
-
-    receipt_data.sort(key=lambda x: x['date'])
-
-    grand_total = sum(item["amount"] for item in receipt_data)
-    print(f"Grand Total: ${grand_total:.2f}")
-
     return receipt_data
+
+def add_per_diem(receipt_data: list[dict], location: str, trip_start: str | None, trip_end: str | None):
+    """
+    If none of the receipts are for food, add a GSA M&IE per diem entry for the trip.
+    Trip dates default to the range of travel dates on the receipts (e.g., flight or hotel dates),
+    falling back to the receipts' transaction dates if no receipt shows travel dates.
+    """
+    if any("category" not in r for r in receipt_data):
+        print("[yellow]Warning: some receipts have no category (saved by an older version?); re-run without --resume to check for food receipts.[/yellow]")
+    food = [r for r in receipt_data if r.get("category") == "food"]
+    if food:
+        print(f"Found {len(food)} food receipt(s); not adding per diem.")
+        return
+
+    travel = [r for r in receipt_data if r.get("travel_start") and r.get("travel_end")]
+    if not travel and not (trip_start and trip_end):
+        print("[yellow]Warning: no receipts show travel dates; using receipt transaction dates for the per diem. Pass --trip-start/--trip-end to override.[/yellow]")
+    start = dateparser.parse(trip_start).date() if trip_start else \
+        min(r["travel_start"] for r in travel).date() if travel else min(r["date"] for r in receipt_data).date()
+    end = dateparser.parse(trip_end).date() if trip_end else \
+        max(r["travel_end"] for r in travel).date() if travel else max(r["date"] for r in receipt_data).date()
+    per_diem = compute_per_diem(location, start, end)
+    print(f"No food receipts found; adding {per_diem['summary']} (${per_diem['amount']:,.2f})")
+    receipt_data.append(per_diem)
 
 def write_combined_pdf(receipt_data: list[dict], output_pdf: str):
     doc = pymupdf.Document()
@@ -172,6 +199,8 @@ def write_combined_pdf(receipt_data: list[dict], output_pdf: str):
 
     # Add all the receipt pages to the writer
     for receipt in receipt_data:
+        if receipt.get("path") is None:
+            continue
         with pymupdf.open(receipt['path']) as pages:
             doc.insert_pdf(pages)
 
@@ -193,6 +222,9 @@ def main():
     parser.add_argument("--model", "-m", default="gemma4:e4b", help="Name of model to use")
     parser.add_argument("--url", "-u", default="http://localhost:11434/api/generate", help="URL serving model")
     parser.add_argument("--output", "-o", default="merged_receipts.pdf", help="Output PDF filename")
+    parser.add_argument("--per-diem-location", help="Trip destination ('City, ST' or ZIP code). If given and no food receipts are found, adds a GSA M&IE per diem")
+    parser.add_argument("--trip-start", help="First day of travel, for per diem (default: earliest travel date on the receipts)")
+    parser.add_argument("--trip-end", help="Last day of travel, for per diem (default: latest travel date on the receipts)")
 
     args = parser.parse_args()
 
@@ -212,6 +244,13 @@ def main():
         for r in receipts:
             table.add_row(os.path.basename(r['path']), r['date'].strftime("%d %b %Y"), r['summary'], f"${r['amount']:>4.2f}")
         print(table)
+
+    if args.per_diem_location:
+        add_per_diem(receipts, args.per_diem_location, args.trip_start, args.trip_end)
+
+    receipts.sort(key=lambda x: x['date'])
+    grand_total = sum(item["amount"] for item in receipts)
+    print(f"Grand Total: ${grand_total:.2f}")
 
     write_combined_pdf(receipts, args.output)
 
