@@ -202,8 +202,9 @@ def main():
 
     if not args.resume or not os.path.exists(args.resume):
         receipts = process_receipts(args.receipts, args.model, args.url)
-        with open(args.resume, 'wb') as f:
-            pickle.dump(receipts, f)
+        if args.resume:
+            with open(args.resume, 'wb') as f:
+                pickle.dump(receipts, f)
     else:
         with open(args.resume, 'rb') as f:
             receipts = pickle.load(f)
